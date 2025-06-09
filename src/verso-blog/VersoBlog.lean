@@ -782,6 +782,10 @@ private def filterString (p : Char → Bool) (str : String) : String := Id.run <
     if p c then out := out.push c
   pure out
 
+/-- Purposefully only map constants, the others are not available in the same way -/
+private def docgenLinkTargets (base : String) : Code.LinkTargets where
+  const name := .some <| s!"{base}/find?pattern={name}#doc"
+
 open Template in
 def blogMain (theme : Theme) (site : Site) (relativizeUrls := true) (options : List String)
     (components : Components := by exact %registered_components) :
@@ -800,7 +804,7 @@ def blogMain (theme : Theme) (site : Site) (relativizeUrls := true) (options : L
     dir := cfg.destination,
     config := cfg,
     rewriteHtml := rw,
-    linkTargets := {},
+    linkTargets := (cfg.docgenUrl.map docgenLinkTargets).getD {},
     components := components
   }
   let (((), st), _) ← site.generate theme initGenCtx .empty {}
@@ -820,6 +824,7 @@ where
   opts (cfg : Config)
     | ("--output"::dir::more) => opts {cfg with destination := dir} more
     | ("--drafts"::more) => opts {cfg with showDrafts := true} more
+    | ("--docgen-url"::url::more) => opts {cfg with docgenUrl := .some url} more
     | (other :: _) => throw (↑ s!"Unknown option {other}")
     | [] => pure cfg
   urlAttr (name : String) : Bool := name ∈ ["href", "src", "data", "poster"]
