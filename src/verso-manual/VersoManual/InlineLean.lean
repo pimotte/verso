@@ -300,6 +300,11 @@ private partial def disableUnusedVarLinterInInfoTree : InfoTree → InfoTree
     .node info (children.map disableUnusedVarLinterInInfoTree)
   | .hole id => .hole id
 
+private def saveEmbeddedSyntaxRoots [Monad m] [MonadInfoTree m]
+    (blame : Syntax) (roots : Array Syntax) : m Unit := do
+  unless roots.isEmpty do
+    pushInfoLeaf <| .ofCustomInfo { stx := blame, value := Dynamic.mk <| Verso.Doc.Elab.EmbeddedSyntaxInfo.mk roots }
+
 def elabCommandsCore (config : LeanBlockConfig) (source : String) (blame : Syntax)
     (summary : String)
     (toHighlightedLeanContent : (shouldShow : Bool) → (hls : Highlighted) → DocElabM Term)
@@ -367,6 +372,7 @@ def elabCommandsCore (config : LeanBlockConfig) (source : String) (blame : Synta
       -- re-running it.
       for t in cmdState.infoState.trees do
         pushInfoTree (disableUnusedVarLinterInInfoTree t)
+      saveEmbeddedSyntaxRoots str nonTerm
 
 
       let mut hls := Highlighted.empty
@@ -565,7 +571,12 @@ def leanTerm : CodeBlockExpanderOf LeanInlineConfig
 
         saveOutputs name msgs
 
+<<<<<<< HEAD
       pushInfoTree (disableUnusedVarLinterInInfoTree tree)
+=======
+      pushInfoTree tree
+      saveEmbeddedSyntaxRoots str #[stx]
+>>>>>>> ejgallego/fix/semantic-inline-tokens
 
       if config.error then
         if newMsgs.hasErrors then
@@ -652,7 +663,12 @@ def leanInline : RoleExpanderOf LeanInlineConfig
 
         saveOutputs name msgs
 
+<<<<<<< HEAD
       pushInfoTree (disableUnusedVarLinterInInfoTree tree)
+=======
+      pushInfoTree tree
+      saveEmbeddedSyntaxRoots term #[stx]
+>>>>>>> ejgallego/fix/semantic-inline-tokens
 
       if let `(inline|role{%$s $f $_*}%$e[$_*]) ← getRef then
         Hover.addCustomHover (mkNullNode #[s, e]) type
