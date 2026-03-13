@@ -145,6 +145,50 @@
 
 ### No Open PR Yet (`needs: progress`)
 
+<<<<<<< HEAD
+=======
+- [ ] `feat/issue-135-multilean`
+  - Path: `/home/egallego/lean/verso/.worktrees/issue-135-multilean`
+  - Status: keep (`needs review from human`)
+  - Decision: human review (set by user)
+  - PR: none
+  - Ahead/Behind vs `upstream/main`: `+4/-0`
+  - Summary: `add :::multilean with synthetic combined elaboration and interleaved explanation rendering`
+  - Notes: branch pushed to `ejgallego/verso:feat/issue-135-multilean`; local implementation includes the shared inline-lean elaboration refactor, multilean block renderer/splitting helpers, explanation styling, and the follow-up fix preserving indentation for split proof steps. Validation passed with `lake build` and `lake test`.
+
+- [ ] `feat/doc-elab-build-mode`
+  - Path: `/home/egallego/lean/verso/.worktrees/doc-elab-build-mode`
+  - Status: keep (`needs review from human`)
+  - Decision: pending (set by user)
+  - PR: none
+  - Ahead/Behind vs `upstream/main`: `+1/-0`
+  - Summary: `thread batch vs interactive document elaboration mode into DocElabContext`
+  - Notes: user-directed task completed locally with build-mode plumbing for `#doc`/`#docs`, batch and LSP regression coverage, and successful `lake build` plus `lake test`.
+- [ ] `perf/manual-bench-infra`
+  - Path: `/home/egallego/lean/verso/.worktrees/manual-bench-infra`
+  - Status: keep (`needs: progress`)
+  - Decision: pending (set by user)
+  - PR: none
+  - Ahead/Behind vs `upstream/main`: `+12/-0`
+  - Summary: `benchmark harness, downstream result snapshot, and manual-harness repair work`
+  - Notes: downstream `reference-manual` benchmark is valid and shows a median speedup; manual benchmark is being reworked around fresh snapshots plus baseline-vs-single-commit comparisons and is still blocked on `subverso` helper compatibility in the workload path.
+- [ ] `perf/manual-elab-review`
+  - Path: `/home/egallego/lean/verso/.worktrees/manual-elab-review`
+  - Status: keep (`needs: progress`)
+  - Decision: pending (set by user)
+  - PR: none
+  - Ahead/Behind vs `upstream/main`: `+7/-0`
+  - Summary: `perf-only stack for manual elaboration changes plus local cleanup commit`
+  - Notes: rebased cleanly onto latest `upstream/main`; still the code branch we are measuring, with benchmark/docs kept on the infra branch.
+- [ ] `perf/manual-genre-scaling`
+  - Path: `/home/egallego/lean/verso/.worktrees/manual-genre-scaling`
+  - Status: keep (`needs: progress`)
+  - Decision: pending (set by user)
+  - PR: none
+  - Ahead/Behind vs `upstream/main`: `+12/-0`
+  - Summary: `research branch with profiling hooks and exploratory manual perf history`
+  - Notes: instrumentation-heavy branch for profiling Verso/VersoManual behavior; attempted rebase hit a real conflict in `src/verso-manual/VersoManual/InlineLean.lean`, so it was left unrebased rather than merged ad hoc.
+>>>>>>> ejgallego/fix/semantic-inline-tokens
 - [ ] `feat/doc-html-preview`
   - Path: `/home/egallego/lean/verso/.worktrees/doc-html-preview`
   - Status: keep (`needs: progress`)
