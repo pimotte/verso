@@ -372,7 +372,7 @@ def elabCommandsCore (config : LeanBlockConfig) (source : String) (blame : Synta
       -- re-running it.
       for t in cmdState.infoState.trees do
         pushInfoTree (disableUnusedVarLinterInInfoTree t)
-      saveEmbeddedSyntaxRoots str nonTerm
+      saveEmbeddedSyntaxRoots blame nonTerm
 
 
       let mut hls := Highlighted.empty
