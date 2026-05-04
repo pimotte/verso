@@ -37,8 +37,6 @@ example := 34 * x
 error: Unknown identifier `z`
 ---
 error: Unknown identifier `z`
----
-error: No error expected in code block, one occurred
 -/
 #guard_msgs in
 #docs (Genre.Manual) fail "Test" :=

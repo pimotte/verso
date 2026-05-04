@@ -78,7 +78,7 @@ It can be both checked and included in the document using {lean}`leanOutput`:
 ```
 
 Expected error messages must be indicated explicitly:
-```lean +error (name := yVal)
+```lean (error := true) (name := yVal)
 #eval y
 ```
 ```leanOutput yVal

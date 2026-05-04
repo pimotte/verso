@@ -55,7 +55,7 @@ end
 #guard_msgs in
 #docs (Manual) novar "My title here" :=
 :::::::
-A variable like {lean +error}`x`.
+A variable like {lean (error := true)}`x`.
 :::::::
 
 section

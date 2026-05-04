@@ -494,7 +494,7 @@ end
 
 ## More `rcases` Pattern Syntax
 
-```lean +error (name := ctorNames)
+```lean (error := true) (name := ctorNames)
 -- Wrong: trying to use constructor names
 example (opt : Option Nat) : True := by
   -- Error: 'none' is not a pattern

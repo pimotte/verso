@@ -81,11 +81,11 @@ structure LeanBlockConfig where
   «show» : Bool
   keep : Bool
   name : Option Name
-  error : Bool
+  error : Option Bool
   fresh : Bool
 
 def LeanBlockConfig.parse : ArgParse m LeanBlockConfig :=
-  LeanBlockConfig.mk <$> .flag `show true <*> .flag `keep true <*> .named `name .name true <*> .flag `error false <*> .flag `fresh false
+  LeanBlockConfig.mk <$> .flag `show true <*> .flag `keep true <*> .named `name .name true <*> .named `error .bool true <*> .flag `fresh false
 
 instance : FromArgs LeanBlockConfig m := ⟨LeanBlockConfig.parse⟩
 
@@ -574,7 +574,7 @@ def leanTerm : CodeBlockExpanderOf LeanInlineConfig
       pushInfoTree (disableUnusedVarLinterInInfoTree tree)
       saveEmbeddedSyntaxRoots str #[stx]
 
-      if config.error then
+      if config.error.getD false then
         if newMsgs.hasErrors then
           for msg in newMsgs.errorsToWarnings.toArray do
             logMessage msg
@@ -666,7 +666,7 @@ def leanInline : RoleExpanderOf LeanInlineConfig
         Hover.addCustomHover (mkNullNode #[s, e]) type
         Hover.addCustomHover f type
 
-      if config.error then
+      if config.error.getD false then
         if newMsgs.hasErrors then
           for msg in newMsgs.errorsToWarnings.toArray do
             logMessage {msg with isSilent := true}
