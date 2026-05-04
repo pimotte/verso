@@ -154,7 +154,7 @@ def reportMessages {m} [Monad m] [MonadLog m] [MonadError m]
   | none =>
     for msg in messages.toArray do
       logMessage {msg with
-        isSilent := msg.isSilent || msg.severity != .error
+        isSilent := msg.isSilent && msg.severity != .error
       }
   | some true =>
     if messages.hasErrors then
