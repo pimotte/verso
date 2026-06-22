@@ -28,7 +28,7 @@ open Verso ArgParse Doc Elab Genre.Manual Html Code Highlighted.WebAssets Expect
 open Lean Elab
 open SubVerso.Highlighting
 
-open Verso.SyntaxUtils (parserInputString runParserCategory' SyntaxError)
+open Verso.SyntaxUtils (runParserCategory' SyntaxError parseStrLitAsCategory strLitInputContext parserInputString)
 
 open Lean.Doc.Syntax
 open Lean.Elab.Tactic.GuardMsgs
@@ -42,10 +42,10 @@ inline_extension Inline.lean (hls : Highlighted) via withHighlighting where
 
   traverse id data _ := do
     let .arr #[_, defined] := data
-      | logError "Expected two-element JSON for Lean code" *> pure none
+      | reportError "Expected two-element JSON for Lean code" *> pure none
     match FromJson.fromJson? defined with
     | .error err =>
-      logError <| "Couldn't deserialize Lean code while traversing inline example: " ++ err
+      reportError <| "Couldn't deserialize Lean code while traversing inline example: " ++ err
       pure none
     | .ok (defs : Array (Name × String)) =>
       saveExampleDefs id defs
@@ -53,21 +53,21 @@ inline_extension Inline.lean (hls : Highlighted) via withHighlighting where
   toTeX :=
     some <| fun _ _ data _ => do
       let .arr #[hlJson, _] := data
-        | TeX.logError "Expected two-element JSON for Lean code" *> pure .empty
+        | reportError "Expected two-element JSON for Lean code" *> pure .empty
       match FromJson.fromJson? hlJson with
       | .error err =>
-        TeX.logError <| "Couldn't deserialize Lean code while rendering inline HTML: " ++ err
+        reportError <| "Couldn't deserialize Lean code while rendering inline HTML: " ++ err
         pure .empty
       | .ok (hl : Highlighted) =>
-        hl.toTeX (g := Manual) (m := ReaderT ExtensionImpls IO)
+        hl.toTeX (g := Manual) (m := ReaderT ExtensionImpls (BuildLogT IO))
   toHtml :=
     open Verso.Output.Html in
     some <| fun _ _ data _ => do
       let .arr #[hlJson, _] := data
-        | HtmlT.logError "Expected two-element JSON for Lean code" *> pure .empty
+        | reportError "Expected two-element JSON for Lean code" *> pure .empty
       match FromJson.fromJson? hlJson with
       | .error err =>
-        HtmlT.logError <| "Couldn't deserialize Lean code while rendering inline HTML: " ++ err
+        reportError <| "Couldn't deserialize Lean code while rendering inline HTML: " ++ err
         pure .empty
       | .ok (hl : Highlighted) =>
         hl.inlineHtml (g := Manual) "examples"
@@ -514,8 +514,6 @@ Elaborates the provided Lean term in the context of the current Verso module.
 def leanTerm : CodeBlockExpanderOf LeanInlineConfig
   | config, str => withoutAsync <| do
 
-    let altStr ← parserInputString str
-
     let leveller :=
       if let some us := config.universes then
         let us :=
@@ -523,69 +521,62 @@ def leanTerm : CodeBlockExpanderOf LeanInlineConfig
             if s.isEmpty then none else some s.toName
         Elab.Term.withLevelNames us
       else id
+    let stx ← parseStrLitAsCategory `term str
+    let (newMsgs, tree) ← do
+      let initMsgs ← Core.getMessageLog
+      let origTrees ← getResetInfoTrees
+      try
+        Core.resetMessageLog
 
-    match Parser.runParserCategory (← getEnv) `term altStr (← getFileName) with
-    | .error e => throwErrorAt str e
-    | .ok stx =>
-      let (newMsgs, tree) ← do
-        let initMsgs ← Core.getMessageLog
-        let origTrees ← getResetInfoTrees
-        try
-          Core.resetMessageLog
+        let tree' ← runWithOpenDecls <| runWithVariables fun _vars => do
+          let expectedType ← config.type.mapM fun (s : StrLit) => do
+            match Parser.runParserCategory (← getEnv) `term s.getString (← getFileName) with
+            | .error e => throwErrorAt stx e
+            | .ok stx => withEnableInfoTree false do
+              let t ← leveller <| Elab.Term.elabType stx
+              Term.synthesizeSyntheticMVarsNoPostponing
+              let t ← instantiateMVars t
+              if t.hasExprMVar || t.hasLevelMVar then
+                throwErrorAt s "Type contains metavariables: {t}"
+              pure t
 
-          let tree' ← runWithOpenDecls <| runWithVariables fun _vars => do
-            let expectedType ← config.type.mapM fun (s : StrLit) => do
-              match Parser.runParserCategory (← getEnv) `term s.getString (← getFileName) with
-              | .error e => throwErrorAt stx e
-              | .ok stx => withEnableInfoTree false do
-                let t ← leveller <| Elab.Term.elabType stx
-                Term.synthesizeSyntheticMVarsNoPostponing
-                let t ← instantiateMVars t
-                if t.hasExprMVar || t.hasLevelMVar then
-                  throwErrorAt s "Type contains metavariables: {t}"
-                pure t
+          let e ← Elab.Term.elabTerm (catchExPostpone := true) stx expectedType
+          Term.synthesizeSyntheticMVarsNoPostponing
+          let _ ← Term.levelMVarToParam (← instantiateMVars e)
 
-            let e ← Elab.Term.elabTerm (catchExPostpone := true) stx expectedType
-            Term.synthesizeSyntheticMVarsNoPostponing
-            let _ ← Term.levelMVarToParam (← instantiateMVars e)
+          let ctx := PartialContextInfo.commandCtx {
+            env := ← getEnv, fileMap := ← getFileMap, mctx := ← getMCtx, currNamespace := ← getCurrNamespace,
+            openDecls := ← getOpenDecls, options := ← getOptions, ngen := ← getNGen
+          }
+          let innerTrees ← getResetInfoTrees
+          pure <| InfoTree.context ctx (.node (Info.ofCommandInfo ⟨`Manual.leanTerm, str⟩) innerTrees)
+        pure (← Core.getMessageLog, tree')
+      finally
+        Core.setMessageLog initMsgs
+        for t in origTrees do pushInfoTree t
 
+    if let some name := config.name then
+      let msgs ← newMsgs.toList.mapM fun (msg : Message) => do
+        let head := if msg.caption != "" then msg.caption ++ ":\n" else ""
+        let msg ← highlightMessage msg
+        pure { msg with contents := .append #[.text head, msg.contents] }
 
-            let ctx := PartialContextInfo.commandCtx {
-              env := ← getEnv, fileMap := ← getFileMap, mctx := ← getMCtx, currNamespace := ← getCurrNamespace,
-              openDecls := ← getOpenDecls,
-              options := ← getOptions,
-              ngen := ← getNGen
-            }
-            let innerTrees ← getResetInfoTrees
-            pure <| InfoTree.context ctx (.node (Info.ofCommandInfo ⟨`Manual.leanTerm, str⟩) innerTrees)
-          pure (← Core.getMessageLog, tree')
-        finally
-          Core.setMessageLog initMsgs
-          for t in origTrees do pushInfoTree t
+      saveOutputs name msgs
 
-      if let some name := config.name then
-        let msgs ← newMsgs.toList.mapM fun (msg : Message) => do
-          let head := if msg.caption != "" then msg.caption ++ ":\n" else ""
-          let msg ← highlightMessage msg
-          pure { msg with contents := .append #[.text head, msg.contents] }
+    pushInfoTree (disableUnusedVarLinterInInfoTree tree)
 
-        saveOutputs name msgs
-
-      pushInfoTree (disableUnusedVarLinterInInfoTree tree)
-      saveEmbeddedSyntaxRoots str #[stx]
-
-      if config.error.getD false then
-        if newMsgs.hasErrors then
-          for msg in newMsgs.errorsToWarnings.toArray do
-            logMessage msg
-        else
-          throwErrorAt str "Error expected in code, but none occurred"
-      else
-        for msg in newMsgs.toArray do
+    if config.error.getD false then
+      if newMsgs.hasErrors then
+        for msg in newMsgs.errorsToWarnings.toArray do
           logMessage msg
+      else
+        throwErrorAt str "Error expected in code, but none occurred"
+    else
+      for msg in newMsgs.toArray do
+        logMessage msg
 
-      let hls := (← highlight stx #[] (PersistentArray.empty.push tree))
-      toHighlightedLeanBlock config.show hls str
+    let hls := (← highlight stx #[] (PersistentArray.empty.push tree))
+    toHighlightedLeanBlock config.show hls str
 
 /--
 Elaborates the provided Lean term in the context of the current Verso module.
@@ -598,7 +589,6 @@ def leanInline : RoleExpanderOf LeanInlineConfig
       | throwError "Expected exactly one argument"
     let `(inline|code( $term:str )) := arg
       | throwErrorAt arg "Expected code literal with the example name"
-    let altStr ← parserInputString term
 
     let leveller :=
       if let some us := config.universes then
@@ -608,81 +598,75 @@ def leanInline : RoleExpanderOf LeanInlineConfig
         Elab.Term.withLevelNames us
       else id
 
-    match Parser.runParserCategory (← getEnv) `term altStr (← getFileName) with
-    | .error e => throwErrorAt term e
-    | .ok stx =>
+    let stx ← parseStrLitAsCategory `term term
+    let (newMsgs, type, tree) ← do
+      let initMsgs ← Core.getMessageLog
+      let origTrees ← getResetInfoTrees
+      try
+        Core.resetMessageLog
+        let (tree', t) ← runWithOpenDecls <| runWithVariables fun _ => do
 
-      let (newMsgs, type, tree) ← do
-        let initMsgs ← Core.getMessageLog
-        let origTrees ← getResetInfoTrees
-        try
-          Core.resetMessageLog
-          let (tree', t) ← runWithOpenDecls <| runWithVariables fun _ => do
+          let expectedType ← config.type.mapM fun (s : StrLit) => do
+            match Parser.runParserCategory (← getEnv) `term s.getString (← getFileName) with
+            | .error e => throwErrorAt term e
+            | .ok stx => withEnableInfoTree false do
+              let t ← leveller <| Elab.Term.elabType stx
+              Term.synthesizeSyntheticMVarsNoPostponing
+              let t ← instantiateMVars t
+              if t.hasExprMVar || t.hasLevelMVar then
+                throwErrorAt s "Type contains metavariables: {t}"
+              pure t
 
-            let expectedType ← config.type.mapM fun (s : StrLit) => do
-              match Parser.runParserCategory (← getEnv) `term s.getString (← getFileName) with
-              | .error e => throwErrorAt term e
-              | .ok stx => withEnableInfoTree false do
-                let t ← leveller <| Elab.Term.elabType stx
-                Term.synthesizeSyntheticMVarsNoPostponing
-                let t ← instantiateMVars t
-                if t.hasExprMVar || t.hasLevelMVar then
-                  throwErrorAt s "Type contains metavariables: {t}"
-                pure t
+          let e ← leveller <| Elab.Term.elabTerm (catchExPostpone := true) stx expectedType
+          Term.synthesizeSyntheticMVarsNoPostponing
+          let e ← Term.levelMVarToParam (← instantiateMVars e)
+          let t ← Meta.inferType e >>= instantiateMVars >>= (Meta.ppExpr ·)
+          let t := Std.Format.group <| (← Meta.ppExpr e) ++ (" :" ++ .line) ++ t
 
-            let e ← leveller <| Elab.Term.elabTerm (catchExPostpone := true) stx expectedType
-            Term.synthesizeSyntheticMVarsNoPostponing
-            let e ← Term.levelMVarToParam (← instantiateMVars e)
-            let t ← Meta.inferType e >>= instantiateMVars >>= (Meta.ppExpr ·)
-            let t := Std.Format.group <| (← Meta.ppExpr e) ++ (" :" ++ .line) ++ t
-
-            Term.synthesizeSyntheticMVarsNoPostponing
-            let ctx := PartialContextInfo.commandCtx {
-              env := ← getEnv, fileMap := ← getFileMap, mctx := ← getMCtx, currNamespace := ← getCurrNamespace,
-              openDecls := ← getOpenDecls,
-              options := ← getOptions,
-              ngen := ← getNGen
-            }
-            let innerTrees ← getResetInfoTrees
-            pure <| (InfoTree.context ctx (.node (Info.ofCommandInfo ⟨`Manual.leanInline, arg⟩) innerTrees), t)
-          pure (← Core.getMessageLog, t, tree')
-        finally
-          Core.setMessageLog initMsgs
-          for t in origTrees do pushInfoTree t
-
-      if let some name := config.name then
-
-        let msgs ← newMsgs.toList.mapM fun (msg : Message) => do
-          let head := if msg.caption != "" then msg.caption ++ ":\n" else ""
-          let msg ← highlightMessage msg
-          pure { msg with contents := .append #[.text head, msg.contents] }
-
-        saveOutputs name msgs
-
-      pushInfoTree (disableUnusedVarLinterInInfoTree tree)
-      saveEmbeddedSyntaxRoots term #[stx]
-
-      if let `(inline|role{%$s $f $_*}%$e[$_*]) ← getRef then
-        Hover.addCustomHover (mkNullNode #[s, e]) type
-        Hover.addCustomHover f type
-
-      if config.error.getD false then
-        if newMsgs.hasErrors then
-          for msg in newMsgs.errorsToWarnings.toArray do
-            logMessage {msg with isSilent := true}
-        else
-          throwErrorAt term "Error expected in code block, but none occurred"
-      else
-        for msg in newMsgs.toArray do
-          logMessage {msg with
-            isSilent := msg.isSilent || msg.severity != .error
+          Term.synthesizeSyntheticMVarsNoPostponing
+          let ctx := PartialContextInfo.commandCtx {
+            env := ← getEnv, fileMap := ← getFileMap, mctx := ← getMCtx, currNamespace := ← getCurrNamespace,
+            openDecls := ← getOpenDecls, options := ← getOptions, ngen := ← getNGen
           }
+          let innerTrees ← getResetInfoTrees
+          pure <| (InfoTree.context ctx (.node (Info.ofCommandInfo ⟨`Manual.leanInline, arg⟩) innerTrees), t)
+        pure (← Core.getMessageLog, t, tree')
+      finally
+        Core.setMessageLog initMsgs
+        for t in origTrees do pushInfoTree t
 
-      reportMessages config.error term newMsgs
+    if let some name := config.name then
 
-      let hls := (← highlight stx #[] (PersistentArray.empty.push tree))
+      let msgs ← newMsgs.toList.mapM fun (msg : Message) => do
+        let head := if msg.caption != "" then msg.caption ++ ":\n" else ""
+        let msg ← highlightMessage msg
+        pure { msg with contents := .append #[.text head, msg.contents] }
 
-      toHighlightedLeanInline config.show hls term
+      saveOutputs name msgs
+
+    pushInfoTree (disableUnusedVarLinterInInfoTree tree)
+
+    if let `(inline|role{%$s $f $_*}%$e[$_*]) ← getRef then
+      Hover.addCustomHover (mkNullNode #[s, e]) type
+      Hover.addCustomHover f type
+
+    if config.error.getD false then
+      if newMsgs.hasErrors then
+        for msg in newMsgs.errorsToWarnings.toArray do
+          logMessage {msg with isSilent := true}
+      else
+        throwErrorAt term "Error expected in code block, but none occurred"
+    else
+      for msg in newMsgs.toArray do
+        logMessage {msg with
+          isSilent := msg.isSilent || msg.severity != .error
+        }
+
+    reportMessages config.error term newMsgs
+
+    let hls := (← highlight stx #[] (PersistentArray.empty.push tree))
+
+    toHighlightedLeanInline config.show hls term
 
 
 /--
@@ -695,53 +679,47 @@ def inst : RoleExpanderOf LeanBlockConfig
       | throwError "Expected exactly one argument"
     let `(inline|code( $term:str )) := arg
       | throwErrorAt arg "Expected code literal with the example name"
-    let altStr ← parserInputString term
 
-    match Parser.runParserCategory (← getEnv) `term altStr (← getFileName) with
-    | .error e => throwErrorAt term e
-    | .ok stx =>
-      let (newMsgs, tree) ← do
-        let initMsgs ← Core.getMessageLog
-        let origTrees ← getResetInfoTrees
-        try
-          Core.resetMessageLog
-          let tree' ← runWithOpenDecls <| runWithVariables fun _ => do
-            let e ← Elab.Term.elabTerm (catchExPostpone := true) stx none
-            Term.synthesizeSyntheticMVarsNoPostponing
-            let _ ← Term.levelMVarToParam (← instantiateMVars e)
-            Term.synthesizeSyntheticMVarsNoPostponing
-            -- TODO this is the only difference from the normal inline Lean. Abstract the commonalities out!
-            discard <| Meta.synthInstance e
+    let stx ← parseStrLitAsCategory `term term
 
+    let (newMsgs, tree) ← do
+      let initMsgs ← Core.getMessageLog
+      let origTrees ← getResetInfoTrees
+      try
+        Core.resetMessageLog
+        let tree' ← runWithOpenDecls <| runWithVariables fun _ => do
+          let e ← Elab.Term.elabTerm (catchExPostpone := true) stx none
+          Term.synthesizeSyntheticMVarsNoPostponing
+          let _ ← Term.levelMVarToParam (← instantiateMVars e)
+          Term.synthesizeSyntheticMVarsNoPostponing
+          -- TODO this is the only difference from the normal inline Lean. Abstract the commonalities out!
+          discard <| Meta.synthInstance e
+          let ctx := PartialContextInfo.commandCtx {
+            env := ← getEnv, fileMap := ← getFileMap, mctx := ← getMCtx, currNamespace := ← getCurrNamespace,
+            openDecls := ← getOpenDecls, options := ← getOptions, ngen := ← getNGen
+          }
+          let innerTrees ← getResetInfoTrees
+          pure <| InfoTree.context ctx (.node (Info.ofCommandInfo ⟨`Manual.inst, arg⟩) innerTrees)
+        pure (← Core.getMessageLog, tree')
+      finally
+        Core.setMessageLog initMsgs
+        for t in origTrees do pushInfoTree t
 
-            let ctx := PartialContextInfo.commandCtx {
-              env := ← getEnv, fileMap := ← getFileMap, mctx := ← getMCtx, currNamespace := ← getCurrNamespace,
-              openDecls := ← getOpenDecls,
-              options := ← getOptions,
-              ngen := ← getNGen
-            }
-            let innerTrees ← getResetInfoTrees
-            pure <| InfoTree.context ctx (.node (Info.ofCommandInfo ⟨`Manual.inst, arg⟩) innerTrees)
-          pure (← Core.getMessageLog, tree')
-        finally
-          Core.setMessageLog initMsgs
-          for t in origTrees do pushInfoTree t
+    if let some name := config.name then
+      let msgs ← newMsgs.toList.mapM fun (msg : Message) => do
+        let head := if msg.caption != "" then msg.caption ++ ":\n" else ""
+        let msg ← highlightMessage msg
+        pure { msg with contents := .append #[.text head, msg.contents] }
 
-      if let some name := config.name then
-        let msgs ← newMsgs.toList.mapM fun (msg : Message) => do
-          let head := if msg.caption != "" then msg.caption ++ ":\n" else ""
-          let msg ← highlightMessage msg
-          pure { msg with contents := .append #[.text head, msg.contents] }
+      saveOutputs name msgs
 
-        saveOutputs name msgs
+    pushInfoTree (disableUnusedVarLinterInInfoTree tree)
 
-      pushInfoTree (disableUnusedVarLinterInInfoTree tree)
+    reportMessages config.error term newMsgs
 
-      reportMessages config.error term newMsgs
+    let hls := (← highlight stx #[] (PersistentArray.empty.push tree))
 
-      let hls := (← highlight stx #[] (PersistentArray.empty.push tree))
-
-      toHighlightedLeanInline config.show hls term
+    toHighlightedLeanInline config.show hls term
 
 /--
 Elaborates the contained document in a new section.
@@ -750,12 +728,27 @@ Elaborates the contained document in a new section.
 def leanSection : DirectiveExpander
   | args, contents => do
     let name? ← ArgParse.run ((some <$> .positional `name .string) <|> pure none) args
-    let arg ← `(doc_arg| -«show»)
-    let code := name?.map (s!"section {·}") |>.getD "section"
-    let start ← `(block|```lean $arg | $(quote code) ```)
-    let code := name?.map (s!"end {·}") |>.getD "end"
-    let «end» ← `(block|```lean $arg | $(quote code) ```)
-    return #[← elabBlock start] ++ (← contents.mapM elabBlock) ++ #[← elabBlock «end»]
+    let scopes ← getScopes
+    let curScope := scopes.head!
+    -- Push a new scope for each component of the section name (matching Lean's behavior for
+    -- `section a.b.c`), or a single anonymous scope if no name is given.
+    let headers := match name? with
+      | some n => n.toName.componentsRev.reverse.map (Name.toString ·)
+      | none => [""]
+    let newScopes := headers.foldl (init := scopes) fun acc header =>
+      { curScope with header } :: acc
+    setScopes newScopes
+    -- Push scoped environment extensions for each scope level (matching what `section` does),
+    -- so that local macros and scoped attributes defined inside are properly deactivated on exit.
+    for _ in headers do
+      Lean.pushScope
+    let result ← contents.mapM elabBlock
+    -- Pop the scopes we pushed (both the scope list and the scoped extensions)
+    let scopes ← getScopes
+    setScopes (scopes.drop headers.length)
+    for _ in headers do
+      Lean.popScope
+    return result
 
 private def getClass : MessageSeverity → String
   | .error => "error"
@@ -770,7 +763,7 @@ block_extension Block.leanOutput via withHighlighting where
     some <| fun _ _ _ data _ => do
       match FromJson.fromJson? data with
       | .error err =>
-        TeX.logError <| "Couldn't deserialize Lean output while rendering TeX: " ++ err ++ "\n" ++ toString data
+        reportError <| "Couldn't deserialize Lean output while rendering TeX: " ++ err ++ "\n" ++ toString data
         pure .empty
       | .ok ((msg, _summarize, expandTraces) : Highlighted.Message × Bool × List Name) =>
         msg.toTeX (expandTraces := expandTraces) (g := Manual)
@@ -779,7 +772,7 @@ block_extension Block.leanOutput via withHighlighting where
     some <| fun _ _ _ data _ => do
       match FromJson.fromJson? data with
       | .error err =>
-        HtmlT.logError <| "Couldn't deserialize Lean output while rendering HTML: " ++ err ++ "\n" ++ toString data
+        reportError <| "Couldn't deserialize Lean output while rendering HTML: " ++ err ++ "\n" ++ toString data
         pure .empty
       | .ok ((msg, summarize, expandTraces) : Highlighted.Message × Bool × List Name) =>
         msg.blockHtml summarize (expandTraces := expandTraces) (g := Manual)
@@ -835,7 +828,7 @@ def leanOutput : CodeBlockExpanderOf LeanOutputConfig
 
     PointOfInterest.save (← getRef) (config.name.getId.toString)
       (kind := Lsp.SymbolKind.file)
-      (selectionRange := config.name)
+      (selectionSyntax? := some config.name)
       (detail? := some ("Lean output" ++ (config.severity.map (s!" ({sevStr ·})") |>.getD "")))
 
     let msgs : List Highlighted.Message ← getOutputs config.name
@@ -944,7 +937,7 @@ inline_extension Inline.name via withHighlighting where
     some <| fun _ _ data _ => do
       match FromJson.fromJson? data with
       | .error err =>
-        HtmlT.logError <| "Couldn't deserialize Lean code while rendering HTML: " ++ err
+        reportError <| "Couldn't deserialize Lean code while rendering HTML: " ++ err
         pure .empty
       | .ok (hl : Highlighted) =>
         hl.inlineHtml (g := Manual) "examples"

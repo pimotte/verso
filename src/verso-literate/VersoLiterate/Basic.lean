@@ -3,14 +3,20 @@ Copyright (c) 2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-
+module
+public import Lean.Attributes
 import Lean.Elab.Term
 import Verso
-import MultiVerso
-import SubVerso.Highlighting
+import Lean.Elab.DocString.Builtin
+public import MultiVerso
+public import SubVerso.Highlighting
+public import Verso.Code.Highlighted
+public import Verso.Doc.Html
 import Std.Data.HashSet
 import Std.Data.TreeSet
 import Verso.BEq
+
+public section
 
 open Verso Doc
 open SubVerso.Highlighting
@@ -28,16 +34,25 @@ inductive Ext where
 deriving ToJson, FromJson, Repr
 
 open Verso.BEq in
-instance : BEq Ext where
-  beq := ptrEqThen fun
+private def Ext.beq : Ext → Ext → Bool :=
+  ptrEqThen fun
     | .highlighted hl1, .highlighted hl2 =>
       ptrEqThen' hl1 hl2 (· == ·)
     | .data x, .data y =>
       ptrEqThen' x y (· == ·)
     | _, _ => false
 
-def InlineToLiterate := Name → Dynamic → Array (Doc.Inline Ext) → TermElabM (Option (Doc.Inline Ext))
-def BlockToLiterate := Name → Dynamic → Array (Doc.Block Ext Ext) → TermElabM (Option (Doc.Block Ext Ext))
+open Verso.BEq in
+instance : BEq Ext where
+  beq := private Ext.beq
+
+@[expose]
+def InlineToLiterate :=
+  Name → Dynamic → Array (Doc.Inline Ext) → TermElabM (Option (Doc.Inline Ext))
+
+@[expose]
+def BlockToLiterate :=
+  Name → Dynamic → Array (Doc.Block Ext Ext) → TermElabM (Option (Doc.Block Ext Ext))
 
 initialize inlineToLiterateAttr : TagAttribute ← registerTagAttribute `inline_to_literate ""
 initialize blockToLiterateAttr : TagAttribute ← registerTagAttribute `block_to_literate ""
@@ -111,6 +126,13 @@ def handleTerm : InlineToLiterate
     throwError "Wrong data"
   | _, _, _ => pure none
 
+def handleSetOption : InlineToLiterate
+  | ``Lean.Doc.Data.SetOption, val, content => do
+    if let some { term, ..} := val.get? Lean.Doc.Data.SetOption then
+      return some <| .other (.highlighted <| highlightDocCode term) content
+    throwError "Wrong data"
+  | _, _, _ => pure none
+
 def handleOption : InlineToLiterate
   | ``Lean.Doc.Data.Option, val, content => do
     if let some { name, declName } := val.get? Lean.Doc.Data.Option then
@@ -130,11 +152,65 @@ def handleTactic : InlineToLiterate
   | ``Lean.Doc.Data.Tactic, val, content => do
     if let some { name } := val.get? Lean.Doc.Data.Tactic then
       let s := if let #[.code s] := content then s else name.toString
-      return some <| .other (.highlighted <| .token ⟨.keyword (some name) none none, s⟩) content
+      let docs ← findDocString? (← getEnv) name
+      return some <| .other (.highlighted <| .token ⟨.keyword (some name) none docs, s⟩) content
     throwError "Wrong data"
   | _, _, _ => pure none
 
-def inline := #[handleLocal, handleConst, handlePostponed, handleAttr, handleTerm, handleOption, handleModName, handleTactic]
+def handleConvTactic : InlineToLiterate
+  | ``Lean.Doc.Data.ConvTactic, val, content => do
+    -- The `conv` role currently stores a `Data.Tactic` value in its `Data.ConvTactic` extension,
+    -- so both payload types are accepted here.
+    let name? : Option Name :=
+      if let some { name } := val.get? Lean.Doc.Data.ConvTactic then some name
+      else if let some { name } := val.get? Lean.Doc.Data.Tactic then some name
+      else none
+    if let some name := name? then
+      let s := if let #[.code s] := content then s else name.toString
+      let docs ← findDocString? (← getEnv) name
+      return some <| .other (.highlighted <| .token ⟨.keyword (some name) none docs, s⟩) content
+    throwError "Wrong data"
+  | _, _, _ => pure none
+
+def handleKwAtom : InlineToLiterate
+  | name, _val, content => do
+    -- Data.Atom is mistakenly marked private in Lean. Here's a workaround until we fix that.
+    -- Check the name's suffix because private names have a mangled prefix:
+    unless name.toString.endsWith "Lean.Doc.Data.Atom" do return none
+    let some s := (match content with | #[.code s] => some s | _ => none) | return none
+    return some <| .other (.highlighted <| .token ⟨.keyword none none none, s⟩) content
+
+def handleSyntax : InlineToLiterate
+  | ``Lean.Doc.Data.Syntax, val, content => do
+    if let some { .. } := val.get? Lean.Doc.Data.Syntax then
+      return some <| .concat content
+    throwError "Wrong data"
+  | _, _, _ => pure none
+
+def handleSyntaxCat : InlineToLiterate
+  | ``Lean.Doc.Data.SyntaxCat, val, content => do
+    if let some { .. } := val.get? Lean.Doc.Data.SyntaxCat then
+      return some <| .concat content
+    throwError "Wrong data"
+  | _, _, _ => pure none
+
+def inline := #[handleLocal, handleConst, handlePostponed, handleAttr, handleTerm, handleSetOption, handleOption, handleModName, handleTactic, handleConvTactic, handleKwAtom, handleSyntax, handleSyntaxCat]
+
+def handleLeanBlock : BlockToLiterate
+  | ``Lean.Doc.Data.LeanBlock, val, content => do
+    if let some { commands } := val.get? Lean.Doc.Data.LeanBlock then
+      return some <| .other (.highlighted <| highlightDocCode commands) content
+    throwError "Wrong data"
+  | _, _, _ => pure none
+
+def handleLeanTermBlock : BlockToLiterate
+  | ``Lean.Doc.Data.LeanTerm, val, content => do
+    if let some { term, .. } := val.get? Lean.Doc.Data.LeanTerm then
+      return some <| .other (.highlighted <| highlightDocCode term) content
+    throwError "Wrong data"
+  | _, _, _ => pure none
+
+def block := #[handleLeanBlock, handleLeanTermBlock]
 
 end Builtin
 
@@ -153,9 +229,9 @@ unsafe def getBlockToLiterateUnsafe [Monad m] [MonadEnv m] [MonadError m] [Monad
   let env ← getEnv
   let mut all := #[]
   for modIdx in [0:env.header.modules.size] do
-    all := all ++ inlineToLiterateAttr.ext.getModuleEntries env modIdx
-  all := all ++ (inlineToLiterateAttr.ext.getState env).toArray
-  all.mapM (evalConstCheck BlockToLiterate ``BlockToLiterate)
+    all := all ++ blockToLiterateAttr.ext.getModuleEntries env modIdx
+  all := all ++ (blockToLiterateAttr.ext.getState env).toArray
+  return (← all.mapM (evalConstCheck BlockToLiterate ``BlockToLiterate)) ++ Builtin.block
 
 @[implemented_by getBlockToLiterateUnsafe]
 opaque getBlockToLiterate [Monad m] [MonadEnv m] [MonadError m] [MonadOptions m] : m (Array BlockToLiterate)
@@ -203,9 +279,8 @@ private def treeMapEqWith (eq : β → β → Bool) : (x1 x2 : TreeMap α β) �
 private def nameMapEqWith (eq : β → β → Bool) : (x1 x2 : Lean.NameMap β) → Bool := ptrEqThen fun l r =>
   l.size = r.size && l.foldl (init := true) fun soFar k v => soFar && ((r.find? k).map (ptrEqThen eq v)).getD false
 
-
-instance : BEq State where
-  beq := ptrEqThen fun
+private def State.beq : State → State → Bool :=
+  ptrEqThen fun
     | ⟨u1, v1, w1, x1, y1, z1⟩, ⟨u2, v2, w2, x2, y2, z2⟩ =>
       hashMapEq u1 u2 &&
       treeSetEq v1 v2 &&
@@ -213,6 +288,9 @@ instance : BEq State where
       nameMapEqWith (hashMapEqWith (· == ·)) x1 x2 &&
       y1 == y2 &&
       z1 == z2
+
+instance : BEq State where
+  beq := private State.beq
 
 end
 
@@ -295,6 +373,7 @@ def State.linkTargets (state : State) : Code.LinkTargets ρ where
 structure Context where
   currentModule : Name := .anonymous
 
+@[expose]
 def Literate : Genre where
   PartMetadata := Empty
   Block := Ext

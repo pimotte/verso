@@ -8,8 +8,11 @@ import Lean.Data.Json
 import Lean.Data.Json.FromToJson
 
 import Verso.Doc.Elab
-import Verso.Doc.PointOfInterest
+public meta import Verso.Doc.Elab.Inline
+public meta import Verso.Doc.PointOfInterest
 public import VersoManual.Basic
+public import VersoManual.Glossary.Norm
+meta import VersoManual.Glossary.Norm
 public import Verso.Doc.Elab.Monad
 
 open Verso Genre Manual ArgParse
@@ -29,16 +32,16 @@ public structure TechArgs extends DefTechArgs where
 section
 variable [Monad m] [Lean.MonadError m] [MonadLiftT Lean.CoreM m]
 
-def DefTechArgs.parse : ArgParse m DefTechArgs :=
+meta def DefTechArgs.parse : ArgParse m DefTechArgs :=
   DefTechArgs.mk <$> .named `key .string true <*> .flag `normalize true
 
-public instance : FromArgs DefTechArgs m where
+public meta instance : FromArgs DefTechArgs m where
   fromArgs := private DefTechArgs.parse
 
-def TechArgs.parse  : ArgParse m TechArgs :=
+meta def TechArgs.parse  : ArgParse m TechArgs :=
   TechArgs.mk <$> fromArgs <*> .named `remote .string true
 
-public instance : FromArgs TechArgs m where
+public meta instance : FromArgs TechArgs m where
   fromArgs := private TechArgs.parse
 
 end
@@ -50,25 +53,6 @@ private theorem glossaryState.isPublic : NameMap.isPublic glossaryState := by gr
 public def Inline.deftech : Inline where
   name := `Verso.Genre.Manual.deftech
 
-private partial def techString (text : Doc.Inline Manual) : String :=
-  match text with
-  | .code str | .math _ str | .text str | .linebreak str => str
-  | .image .. | .footnote .. => ""
-  | .other _ txt
-  | .concat txt
-  | .bold txt
-  | .emph txt
-  | .link txt _href => String.join <| txt.toList.map techString
-
--- Implements the normalization procedure used in Scribble
-private partial def normString (term : String) : String := Id.run do
-  let mut str := term.toLower
-  if str.endsWith "ies" then
-    str := (str.dropEnd 3).copy ++ "y"
-  if str.endsWith "s" then
-    str := str.dropEnd 1 |>.copy
-  str := str.replace "‑" "-"
-  String.intercalate " " (str.splitToList (fun c => c.isWhitespace || c == '-') |>.filter (!·.isEmpty))
 
 
 open Lean in
@@ -88,7 +72,7 @@ of the automatically-derived key.
 Uses of `tech` use the same process to derive a key, and the key is matched against the `deftech` table.
 -/
 @[role]
-public def deftech : RoleExpanderOf DefTechArgs
+public meta def deftech : RoleExpanderOf DefTechArgs
   | {key, normalize}, content => do
 
     -- Heuristically guess at the string and key (usually works)
@@ -108,12 +92,12 @@ public def deftech : RoleExpanderOf DefTechArgs
 
 
 /-- Adds an internal identifier as a target for a given glossary entry -/
-def Glossary.addEntry [Monad m] [MonadState TraverseState m] [MonadLiftT IO m] [MonadReaderOf TraverseContext m]
+def Glossary.addEntry [Monad m] [MonadState TraverseState m] [MonadLiftT IO m] [MonadReaderOf TraverseContext m] [MonadBuildLog m]
     (id : InternalId) (key : String) : m Unit := do
   match (← get).get? glossaryState with
   | none =>
     modify (TraverseState.set · glossaryState <| Lean.Json.mkObj [(key, ToJson.toJson id)])
-  | some (.error err) => logError err
+  | some (.error err) => reportError err
   | some (.ok (v : Json)) =>
     modify (TraverseState.set · glossaryState <| v.setObjVal! key (ToJson.toJson id))
 
@@ -143,7 +127,7 @@ public def deftech.descr : InlineDescr where
     let path ← (·.path) <$> read
     match FromJson.fromJson? data with
     | .error err =>
-      logError err
+      reportError err
       return none
     | .ok ((key, term) : (String × String) ) =>
       let termSlug := term.sluggify.toString
@@ -185,7 +169,7 @@ Call with `(normalize := false)` to disable normalization, and `(key := some k)`
 of the automatically-derived key.
 -/
 @[role]
-public def tech : RoleExpanderOf TechArgs
+public meta def tech : RoleExpanderOf TechArgs
   | {key, normalize, remote}, content => do
 
     -- Heuristically guess at the string and key (usually works)
@@ -197,15 +181,16 @@ public def tech : RoleExpanderOf TechArgs
       (kind := .key)
 
     let filename ← getFileName
-    let line := (← getFileMap).utf8PosToLspPos <$> (← getRef).getPos?
-    let loc : String := filename ++ (line.map (fun ⟨line, col⟩ => s!":{line}:{col}")).getD ""
+    let pos? := (← getFileMap).utf8PosToLspPos <$> (← getRef).getPos?
 
     let content ← content.mapM elabInline
 
 
     `(let content : Array (Doc.Inline Verso.Genre.Manual) := #[$content,*]
       let k := ($(quote key) : Option String).getD (techString (Doc.Inline.concat content))
-      Doc.Inline.other {Inline.tech with data := Json.arr #[Json.str (if $(quote normalize) then normString k else k), Json.str $(quote loc), $(quote remote).map Json.str |>.getD Json.null]} content)
+      let loc : Verso.SourceLoc :=
+        { file := $(quote filename), span := ($(quote pos?) : Option Lean.Lsp.Position) }
+      Doc.Inline.other {Inline.tech with data := Json.arr #[Json.str (if $(quote normalize) then normString k else k), Lean.toJson loc, $(quote remote).map Json.str |>.getD Json.null]} content)
 
 open Verso.Output Html in
 private def techLink (addr : String) (content : Html) (remote? : Option String := none) :=
@@ -223,14 +208,15 @@ public def tech.descr : InlineDescr where
     open Verso.Output.Html in
     open Doc.Html in
     some <| fun go _id info content => do
-      let Json.arr #[.str key, .str loc, remote] := info
-        | HtmlT.logError s!"Failed to decode glossary key and location from {info}"
+      let Json.arr #[.str key, locJson, remote] := info
+        | reportError s!"Failed to decode glossary key and location from {info}"
           content.mapM go
+      let loc : Option Verso.SourceLoc := (Lean.fromJson? (α := Verso.SourceLoc) locJson).toOption
       let remote ←
         match remote with
         | .null => pure none
         | .str s => pure (some s)
-        | other => HtmlT.logError s!"Failed to decode optional remote from {other}"; pure none
+        | other => reportError s!"Failed to decode optional remote from {other}"; pure none
 
       match remote with
       | none =>
@@ -240,17 +226,17 @@ public def tech.descr : InlineDescr where
             if let some link := (← HtmlT.state).resolveId ids[0] then
               return techLink link.relativeLink (← content.mapM go)
             else
-              HtmlT.logError s!"{loc}: No link target saved for internal ID of term \"{key}\""
+              reportError s!"No link target saved for internal ID of term \"{key}\"" loc
               content.mapM go
           else
             let st ← HtmlT.state
             let potentialTargets := ids.map st.resolveId |>.map (·.map (·.link))
             let potentialTargets := potentialTargets.map fun tgt? =>
               s!" * {tgt?.getD "<no link>"}"
-            HtmlT.logError s!"{loc}: Ambiguous term def with key \"{key}\". Targets:\n{"\n".intercalate potentialTargets.toList}"
+            reportError s!"Ambiguous term def with key \"{key}\". Targets:\n{"\n".intercalate potentialTargets.toList}" loc
             content.mapM go
         else
-          HtmlT.logError s!"{loc}: No term def with key \"{key}\""
+          reportError s!"No term def with key \"{key}\"" loc
           content.mapM go
       | some r =>
         if let some remote := (← readThe AllRemotes)[r]? then
@@ -258,17 +244,17 @@ public def tech.descr : InlineDescr where
             if h : objs.size = 1 then
               return techLink objs[0].link.link (← content.mapM go)
             else
-              HtmlT.logError s!"{loc}: Ambiguous term def with key \"{key}\" in remote {r.quote} - {objs.map (·.link.link)} found"
+              reportError s!"Ambiguous term def with key \"{key}\" in remote {r.quote} - {objs.map (·.link.link)} found" loc
               content.mapM go
           else
             let keys := remote.domains[technicalTermDomain]?
               |>.map (·.contents.keysArray.qsortOrd.toList |> ", ".intercalate)
               |>.map ("Keys are: " ++ ·)
               |>.getD "Technical term domain not found."
-            HtmlT.logError s!"{loc}: No term def with key \"{key}\" in remote {r.quote}. {keys}"
+            reportError s!"No term def with key \"{key}\" in remote {r.quote}. {keys}" loc
             content.mapM go
         else
-          HtmlT.logError s!"{loc}: Remote {r.quote} not found in {(← readThe AllRemotes).allRemotes.keys}"
+          reportError s!"Remote {r.quote} not found in {(← readThe AllRemotes).allRemotes.keys}" loc
           content.mapM go
 
   extraCss := [

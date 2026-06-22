@@ -74,6 +74,22 @@ Specifying a tag has the following benefits:
 Tags should be specified for all sections that the author considers to have a stable identity.
 :::
 
+:::paragraph
+To refer to a tag, use the {name}`ref` role.
+It takes the following parameters:
+ * A mandatory _canonical name_, which is the tag assigned to some content.
+  By default, this is expected to be a section tag; specifying alternative domains allows the cross reference to be resolved in some other namespace.
+ * An optional named argument `domain`, which determines the namespace in which the canonical name is looked up. If no domain is provided, then `domain` defaults to section tags, but other kinds of content may add their cross-references to other namespaces.
+ * An optional named argument `remote`, which causes the name to be looked up in data loaded from some other Verso document.
+:::
+
+:::paragraph
+A {ref "manual-tags"}[reference to this very section] can be created using its tag `"manual-tags"`:
+```
+{ref "manual-tags"}[reference to this very section]
+```
+:::
+
 # Paragraphs
 %%%
 tag := "paragraph-directive"
@@ -83,6 +99,65 @@ The {name}`paragraph` directive indicates that a sequence of blocks form a logic
 Verso's markup language shares one key limitation with Markdown and HTML: bulleted lists and code blocks cannot be contained within paragraphs.
 However, there's no _a priori_ reason to reject this, and many real documents include lists in paragraphs.
 When using the {name}`paragraph` directive, HTML output wraps the contents in a suitable element that causes their internal margins to be a bit smaller, and TeX output omits the blank line that would signal a paragraph break to TeX.
+
+# Tables
+%%%
+tag := "table-directive"
+%%%
+
+The {name}`table` directive is used to implement tables.
+Tables are written as bulleted list of bulleted lists; the outer lists are rows, and the inner lists are columns; each row must contain the same number of columns.
+
+The flag `header` determines whether the first row should be considered as table data or as headers for the remaining rows.
+The named paramter `align`, which may be {name TableConfig.Alignment.left}`left`, {name TableConfig.Alignment.center}`center`, or {name TableConfig.Alignment.right}`right`, determines the alignment of the table with respect to the surrounding text.
+
+::::paragraph
+This table maps $`n` to $`n!`:
+```
+:::table +header (align := center)
+*
+  * $`n`
+  * $`n!`
+*
+  * 0
+  * 1
+*
+  * 1
+  * 1
+*
+  * 2
+  * 2
+*
+  * 3
+  * 6
+*
+  * 4
+  * 24
+:::
+```
+
+It is rendered as follows:
+:::table +header (align := center)
+*
+  * $`n`
+  * $`n!`
+*
+  * 0
+  * 1
+*
+  * 1
+  * 1
+*
+  * 2
+  * 2
+*
+  * 3
+  * 6
+*
+  * 4
+  * 24
+:::
+::::
 
 # Docstrings
 %%%
@@ -173,3 +248,59 @@ These contain a {name}`LicenseInfo`:
 The {name}`licenseInfo` command displays the licenses for all components that were included in the generated document:
 
 {docstring licenseInfo}
+
+# Diagrams
+%%%
+tag := "diagrams"
+%%%
+
+Diagrams can be defined using the `illuminate` library and added to documents using the {name}`diagram` code block.
+*This library is experimental, and its API is subject to change.*
+
+:::paragraph
+For example, a diagram with a connected circle and rectangle can be rendered using the following code:
+````
+```diagram (cssWidth := "50%") (texWidth := "0.5\\textwidth")
+open Illuminate Diagram in
+let c := circle 50 (name := `c)
+let r := rect 80 90 (name := `r)
+hsep 10 [c, r]
+  |>.connectEdge
+    { point := `c, angle := some (pi / 4), pull := 0.5 }
+    { point := `r, angle := some (2 * pi / 3), pull := 1 }
+```
+````
+
+It results in the following output:
+
+```diagram (cssWidth := "50%") (texWidth := "0.5\\textwidth")
+open Illuminate Diagram in
+let c := circle 50 (name := `c)
+let r := rect 80 90 (name := `r)
+hsep 10 [c, r]
+  |>.connectEdge
+    { point := `c, angle := some (pi / 4), pull := 0.5 }
+    { point := `r, angle := some (2 * pi / 3), pull := 1 }
+```
+:::
+:::paragraph
+The {name}`diagram` code block accepts an `inline` flag that marks it for inline rendering in CSS. It also accepts the following named arguments:
+
+: `cssWidth`
+
+  A width in CSS format that is copied verbatim to the width of the output image in HTML.
+
+: `cssScale`
+
+  A scaling factor that relates the diagram's width to `em` in rendered HTML. Use this to have consistent sizing between multiple diagrams.
+
+: `texWidth`
+
+  The `width` parameter passed verbatim to `\includesvg` in TeX output.
+
+
+:::
+
+Building PDFs from LaTeX output relies on the `svg` LaTeX package, which calls Inkscape to convert each emitted SVG to PDF at build time.
+This requires `inkscape` on the `PATH` as well as running `lualatex` with the `-shell-escape` flag.
+This flag allows LaTeX to execute arbitrary commands during compilation.
