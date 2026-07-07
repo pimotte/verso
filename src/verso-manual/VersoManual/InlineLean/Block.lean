@@ -106,7 +106,7 @@ block_extension Block.multilean
   traverse id data _ := do
     match FromJson.fromJson? data with
     | .error err =>
-      logError <| "Couldn't deserialize multilean block while traversing example: " ++ err
+      reportError <| "Couldn't deserialize multilean block while traversing example: " ++ err
       pure none
     | .ok (info : MultiLeanData) =>
       let defs := definedNames info.code
@@ -116,7 +116,7 @@ block_extension Block.multilean
     some <| fun _ go _ data content => do
       match FromJson.fromJson? data with
       | .error err =>
-        TeX.logError <| "Couldn't deserialize multilean block while rendering TeX: " ++ err
+        reportError <| "Couldn't deserialize multilean block while rendering TeX: " ++ err
         pure .empty
       | .ok (info : MultiLeanData) =>
         let pieces := splitMultileanCode info.code info.placeholders
@@ -132,14 +132,14 @@ block_extension Block.multilean
             if h : idx < renderedBlocks.size then
               out := out ++ renderedBlocks[idx]
             else
-              TeX.logError s!"Missing multilean explanation block {idx}"
+              reportError s!"Missing multilean explanation block {idx}"
         pure out
   toHtml :=
     open Verso.Output.Html in
     some <| fun _ go _ data content => do
       match FromJson.fromJson? data with
       | .error err =>
-        HtmlT.logError <| "Couldn't deserialize multilean block while rendering HTML: " ++ err
+        reportError <| "Couldn't deserialize multilean block while rendering HTML: " ++ err
         pure .empty
       | .ok (info : MultiLeanData) =>
         let pieces := splitMultileanCode info.code info.placeholders
@@ -160,5 +160,5 @@ block_extension Block.multilean
                 </div>
               }}
             else
-              HtmlT.logError s!"Missing multilean explanation block {idx}"
+              reportError s!"Missing multilean explanation block {idx}"
         pure {{<div class="multilean">{{out}}</div>}}
